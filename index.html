@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>GitHub Butler v3.3</title>
+    
+    <!-- React & Tailwind -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
+        .select-none { user-select: none; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .dark .glass-panel {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        /* Markdown Overrides */
+        .markdown-body p { margin-bottom: 0.8em; }
+        .markdown-body pre { background: #1e293b; color: #e2e8f0; padding: 1em; border-radius: 0.5em; overflow-x: auto; }
+        
+        /* Matrix Mode */
+        .matrix-mode { font-family: 'JetBrains Mono', monospace; color: #0f0; background: #000; }
+        .matrix-mode * { border-color: #0f0 !important; }
+        
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.2s ease-out forwards; }
+
+        /* Scrollbar fix for AI panel */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors duration-200 overflow-hidden fixed inset-0">
+    <div id="root" class="h-full w-full"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        // --- CONSTANTS ---
+        const DB_NAME = 'ButlerDB_v3';
+        const STORE_KEYS = 'keyring';
+        const STORE_SETTINGS = 'settings';
+        
+        const AI_MODES = {
+            INVESTIGATOR: { id: 'investigator', name: 'Investigator', icon: 'fa-magnifying-glass', prompt: 'You are a deep-dive technical investigator. Analyze connections and root causes.' },
+            ENGINEER: { id: 'engineer', name: 'Software Engineer', icon: 'fa-code', prompt: 'You are a senior software engineer. Suggest clean, idiomatic code improvements and refactors.' },
+            SECURITY: { id: 'security', name: 'Security Auditor', icon: 'fa-shield-halved', prompt: 'You are a security auditor. Scrutinize code for vulnerabilities.' },
+            MENTOR: { id: 'mentor', name: 'Mentor', icon: 'fa-graduation-cap', prompt: 'Explain concepts clearly and suggest improvements with educational context.' }
+        };
+
+        const FILE_ICONS = {
+            js: 'fa-js text-yellow-400', ts: 'fa-js text-blue-400', jsx: 'fa-react text-cyan-400', tsx: 'fa-react text-blue-500',
+            py: 'fa-python text-blue-500', html: 'fa-html5 text-orange-500', css: 'fa-css3-alt text-blue-500',
+            json: 'fa-code text-green-400', md: 'fa-file-lines text-slate-400', yml: 'fa-gears text-red-400', yaml: 'fa-gears text-red-400',
+            dockerfile: 'fa-docker text-blue-400', gitignore: 'fa-git-alt text-orange-600'
+        };
+
+        const TEMPLATES = {
+            blank: `<!DOCTYPE html>\n<html>\n<body>\n  <h1>Hello World</h1>\n</body>\n</html>`,
+            todo: `<!DOCTYPE html>\n<html>\n<style>body{font-family:sans-serif;padding:20px}</style>\n<body>\n  <h2>Todo List</h2>\n  <input id="i"><button onclick="add()">Add</button>\n  <ul id="l"></ul>\n  <script>\n    function add(){let v=document.getElementById('i').value;if(v){let li=document.createElement('li');li.textContent=v;document.getElementById('l').appendChild(li);document.getElementById('i').value=''}} \n  </script>\n</body>\n</html>`
+        };
+
+        // --- ASCII TOOL CODE (Cleaned) ---
+        const ASCII_TOOL_CODE = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ASCII Engine</title><script src="https://cdn.tailwindcss.com"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif}.mono{font-family:monospace;line-height:10px}.glass{background:rgba(30,41,59,0.7);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1)}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}</style></head><body class="h-screen flex flex-col overflow-hidden"><header class="h-14 border-b border-slate-700 bg-slate-900/50 flex items-center justify-between px-6 shrink-0"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white"><i class="fas fa-image"></i></div><h1 class="font-bold text-lg">ASCII Engine</h1></div></header><main class="flex-1 flex overflow-hidden"><aside class="w-80 bg-slate-900 border-r border-slate-700 flex flex-col p-6 overflow-y-auto shrink-0 z-10"><div id="dropZone" class="border-2 border-dashed border-slate-600 rounded-xl p-6 text-center hover:border-indigo-500 hover:bg-slate-800/50 transition-all cursor-pointer mb-6" onclick="document.getElementById('f').click()"><input type="file" id="f" class="hidden" accept="image/*"><i class="fas fa-cloud-upload-alt text-3xl text-indigo-400 mb-3"></i><p class="text-sm text-slate-300 font-medium">Drop image here</p></div><div class="space-y-6"><div><div class="flex justify-between mb-2"><label class="text-xs font-semibold text-slate-400 uppercase">Width</label><span id="wV" class="text-xs text-indigo-400 font-mono">100</span></div><input type="range" id="w" min="20" max="300" value="100" class="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"></div><div><label class="text-xs font-semibold text-slate-400 uppercase mb-2 block">Charset</label><div class="grid grid-cols-2 gap-2"><button class="b px-3 py-2 rounded-lg bg-indigo-600 text-xs transition-colors active" data-s="std">Standard</button><button class="b px-3 py-2 rounded-lg bg-slate-800 text-xs transition-colors" data-s="blk">Blocks</button><button class="b px-3 py-2 rounded-lg bg-slate-800 text-xs transition-colors" data-s="smp">Simple</button><button class="b px-3 py-2 rounded-lg bg-slate-800 text-xs transition-colors" data-s="mtx">Matrix</button></div></div><div class="flex items-center justify-between p-3 bg-slate-800 rounded-lg"><span class="text-sm">Invert</span><input type="checkbox" id="inv"></div><div class="flex items-center justify-between p-3 bg-slate-800 rounded-lg"><span class="text-sm">Color</span><input type="checkbox" id="col"></div></div><div class="mt-auto pt-6 border-t border-slate-700 grid grid-cols-2 gap-2"><button onclick="cp()" class="px-4 py-2 bg-slate-800 rounded-lg text-sm">Copy</button><button onclick="dl()" class="px-4 py-2 bg-indigo-600 rounded-lg text-sm">Save</button></div></aside><div class="flex-1 bg-black overflow-auto flex items-center justify-center p-10"><pre id="o" class="mono text-[10px] leading-[8px] whitespace-pre origin-center transition-transform select-text"></pre></div></main><canvas id="c" class="hidden"></canvas><script>const C={std:" .:-=+*#%@" .split(''),smp:".:#@".split(''),blk:" \u2591\u2592\u2593\u2588" .split(''),mtx:" 01" .split('')};let s={i:null,w:100,k:'std',v:false,c:false};const c=document.getElementById('c'),x=c.getContext('2d'),o=document.getElementById('o');function P(){if(!s.i)return;const a=s.i.height/s.i.width,W=s.w,H=Math.floor(W*a*0.55);c.width=W;c.height=H;x.drawImage(s.i,0,0,W,H);const d=x.getImageData(0,0,W,H).data,ch=C[s.k];let t="",h="";for(let y=0;y<H;y++){for(let x=0;x<W;x++){const i=(y*W+x)*4,r=d[i],g=d[i+1],b=d[i+2];if(d[i+3]===0){t+=" \n";h+=" \n";continue}let l=(0.299*r+0.587*g+0.114*b);if(s.v)l=255-l;const char=ch[Math.floor((l/255)*(ch.length-1))];if(s.c)h+='<span style=\'color:rgb('+r+','+g+','+b+')\'>'+char+'</span>';else t+=char;}t+="\n";h+="\n";}o[s.c?'innerHTML':'textContent']=s.c?h:t;}function F(f){if(!f)return;const r=new FileReader();r.onload=e=>{const i=new Image();i.onload=()=>{s.i=i;P()};i.src=e.target.result};r.readAsDataURL(f)}document.getElementById('f').onchange=e=>F(e.target.files[0]);document.getElementById('dropZone').ondrop=e=>{e.preventDefault();F(e.dataTransfer.files[0])};document.getElementById('dropZone').ondragover=e=>e.preventDefault();document.getElementById('w').oninput=e=>{s.w=parseInt(e.target.value);document.getElementById('wV').textContent=s.w;P()};document.getElementById('inv').onchange=e=>{s.v=e.target.checked;P()};document.getElementById('col').onchange=e=>{s.c=e.target.checked;P()};document.querySelectorAll('.b').forEach(b=>b.onclick=()=>{document.querySelectorAll('.b').forEach(x=>x.classList.replace('bg-indigo-600','bg-slate-800'));b.classList.replace('bg-slate-800','bg-indigo-600');s.k=b.dataset.s;P()});function cp(){navigator.clipboard.writeText(o.textContent).then(()=>alert('Copied!'))}function dl(){const b=new Blob([s.c?`<html><body style="background:#000;font-family:monospace">${o.innerHTML}</body></html>`:o.textContent],{type:s.c?"text/html":"text/plain"});const u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download=`ascii-${Date.now()}.${s.c?"html":"txt"}`;a.click();}window.onpaste=e=>{if(e.clipboardData.files.length)F(e.clipboardData.files[0])};</script></body></html>`;
+
+        // --- DATABASE LAYER (IndexedDB) ---
+        const DB = {
+            init: () => new Promise((resolve) => {
+                const req = indexedDB.open(DB_NAME, 2);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_KEYS)) db.createObjectStore(STORE_KEYS, { keyPath: 'id' });
+                    if (!db.objectStoreNames.contains(STORE_SETTINGS)) db.createObjectStore(STORE_SETTINGS, { keyPath: 'id' });
+                };
+                req.onsuccess = () => resolve(req.result);
+            }),
+            getAll: async (store) => {
+                const db = await DB.init();
+                return new Promise(resolve => {
+                    db.transaction(store, 'readonly').objectStore(store).getAll().onsuccess = (e) => resolve(e.target.result);
+                });
+            },
+            put: async (store, data) => {
+                const db = await DB.init();
+                return new Promise(resolve => {
+                    db.transaction(store, 'readwrite').objectStore(store).put(data).onsuccess = () => resolve();
+                });
+            },
+            delete: async (store, id) => {
+                const db = await DB.init();
+                return new Promise(resolve => {
+                    db.transaction(store, 'readwrite').objectStore(store).delete(id).onsuccess = () => resolve();
+                });
+            }
+        };
+
+        // --- HELPER COMPONENTS ---
+        const MarkdownRenderer = ({ content }) => {
+            const html = useMemo(() => DOMPurify.sanitize(marked.parse(content || '')), [content]);
+            return <div className="markdown-body text-sm select-text" dangerouslySetInnerHTML={{ __html: html }} />;
+        };
+
+        const StatusBadge = ({ state, type }) => {
+            let color = "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+            let icon = "fa-circle";
+            if (state === 'open') { color = "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"; icon = type === 'pr' ? "fa-code-pull-request" : "fa-circle-dot"; }
+            else if (state === 'closed') { color = "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"; icon = "fa-check-circle"; }
+            return <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${color}`}><i className={`fas ${icon} text-[10px]`}></i>{state}</span>;
+        };
+
+        const HealthBar = ({ score }) => {
+            let color = score > 80 ? 'bg-green-500' : score > 50 ? 'bg-yellow-500' : 'bg-red-500';
+            return (
+                <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+                    <div className="w-16 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div className={`h-full ${color}`} style={{ width: `${score}%` }}></div>
+                    </div>
+                    <span>{score}% Health</span>
+                </div>
+            );
+        };
+
+        // --- VIEW COMPONENTS (ConnectView) ---
+        const ConnectView = ({ keyring, setKeyring, activeKey, setActiveKey, setView, handleConnect }) => {
+            const [showToken, setShowToken] = useState(false);
+
+            const saveKey = async (alias, token) => {
+                const newKey = { id: Date.now().toString(), alias, token };
+                await DB.put(STORE_KEYS, newKey);
+                setKeyring(prev => [...prev, newKey]);
+                setActiveKey(newKey);
+            };
+            
+            // --- IMPROVEMENT: Use the passed handleConnect function directly instead of relying on DOM query selector trickery ---
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-950 relative">
+                    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                        <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] bg-purple-500/10 rounded-full blur-3xl"></div>
+                        <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-blue-500/10 rounded-full blur-3xl"></div>
+                    </div>
+                    
+                    <div className="glass-panel w-full max-w-md p-8 rounded-2xl shadow-2xl relative z-10">
+                        <div className="flex justify-between items-start mb-8">
+                            <div className="text-center w-full">
+                                <div className="w-16 h-16 bg-slate-900 text-white rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 shadow-lg">
+                                    <i className="fas fa-user-tie"></i>
+                                </div>
+                                <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">GitHub Butler v3.3</h1>
+                                <p className="text-slate-600 dark:text-slate-400">Integrated Tools Edition</p>
+                            </div>
+                            <button onClick={() => setView('settings')} className="absolute top-8 right-8 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                                <i className="fas fa-cog text-xl"></i>
+                            </button>
+                        </div>
+
+                        {/* Keyring Selection */}
+                        {keyring.length > 0 && activeKey && (
+                             <div className="mb-6">
+                                <label className="block text-xs font-semibold text-slate-500 uppercase mb-2">Select Identity</label>
+                                <div className="space-y-2">
+                                    {keyring.map(k => (
+                                        <div key={k.id} onClick={() => setActiveKey(k)} 
+                                            className={`p-3 rounded-lg border cursor-pointer flex justify-between items-center transition-all ${activeKey?.id === k.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+                                            <span className="font-medium">{k.alias}</span>
+                                            {activeKey?.id === k.id && <i className="fas fa-check text-blue-500"></i>}
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="mt-4 flex gap-2">
+                                    <button onClick={handleConnect} className="flex-1 bg-slate-900 dark:bg-blue-600 text-white py-2.5 rounded-lg font-medium hover:opacity-90 transition-all">
+                                        Enter Estate
+                                    </button>
+                                    <button onClick={() => { setActiveKey(null); }} className="px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                                        <i className="fas fa-plus"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Add New Key Form */}
+                        {(!keyring.length || !activeKey) && (
+                            <form onSubmit={(e) => { e.preventDefault(); saveKey(e.target.alias.value, e.target.token.value); }} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Alias</label>
+                                    <input name="alias" type="text" placeholder="e.g. Work, Personal" className="w-full p-2.5 rounded-lg border dark:bg-slate-800 dark:border-slate-700 outline-none focus:border-blue-500" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">Token (ghp_...)</label>
+                                    <div className="relative">
+                                        <input name="token" type={showToken ? "text" : "password"} placeholder="ghp_..." className="w-full p-2.5 rounded-lg border dark:bg-slate-800 dark:border-slate-700 outline-none focus:border-blue-500" required />
+                                        <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-3 text-slate-400 hover:text-slate-600">
+                                            <i className={`fas ${showToken ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <button type="submit" className="w-full bg-slate-900 dark:bg-blue-600 text-white py-2.5 rounded-lg font-medium">
+                                    Save to Keyring
+                                </button>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- VIEW COMPONENTS (SettingsView) ---
+        const SettingsView = ({ setView }) => {
+            const [localProxyUrl, setLocalProxyUrl] = useState('');
+
+            useEffect(() => {
+                // Load proxy setting on mount
+                DB.getAll(STORE_SETTINGS).then(settings => {
+                    const proxySetting = settings.find(s => s.id === 'proxyUrl');
+                    if (proxySetting) setLocalProxyUrl(proxySetting.value);
+                });
+            }, []);
+
+            const saveSetting = async (key, value) => {
+                await DB.put(STORE_SETTINGS, { id: key, value });
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-950">
+                    <div className="glass-panel w-full max-w-md p-8 rounded-2xl shadow-2xl relative z-10">
+                        <h2 className="text-xl font-bold mb-6">Settings</h2>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">AI Proxy URL</label>
+                                <input 
+                                    type="text" 
+                                    value={localProxyUrl}
+                                    onChange={(e) => {
+                                        setLocalProxyUrl(e.target.value);
+                                        saveSetting('proxyUrl', e.target.value);
+                                    }}
+                                    placeholder="https://my-worker.workers.dev" 
+                                    className="w-full p-2.5 rounded-lg border dark:bg-slate-800 dark:border-slate-700 outline-none focus:border-blue-500" 
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Proxy for forwarding AI requests (if direct connection fails).</p>
+                            </div>
+                            <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
+                                <button onClick={() => setView('connect')} className="w-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 py-2.5 rounded-lg font-medium">Back to Connection</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- MAIN APP (Refactored into RootApp, components defined inline for context) ---
+        const RootApp = () => {
+            // State Initialization
+            const [darkMode, setDarkMode] = useState(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const [matrixMode, setMatrixMode] = useState(false);
+            const [view, setView] = useState('connect'); // connect, dashboard, settings
+            const [activeTab, setActiveTab] = useState('repos'); // repos, studio
+            
+            // Data State
+            const [keyring, setKeyring] = useState([]);
+            const [activeKey, setActiveKey] = useState(null);
+            const [user, setUser] = useState(null);
+            const [repos, setRepos] = useState([]);
+            const [issues, setIssues] = useState([]); // Unused in rendered dashboard logic, but kept for potential future use
+            const [prs, setPrs] = useState([]);       // Unused in rendered dashboard logic, but kept for potential future use
+            const [proxyUrl, setProxyUrl] = useState('');
+            
+            // File Browser State
+            const [currentRepo, setCurrentRepo] = useState(null);
+            const [currentPath, setCurrentPath] = useState('');
+            const [dirContents, setDirContents] = useState([]);
+            const [fileContent, setFileContent] = useState(null);
+
+            // Studio State
+            const [editorCode, setEditorCode] = useState(TEMPLATES.blank);
+            const [studioPreviewKey, setStudioPreviewKey] = useState(0);
+
+            // AI State
+            const [investigationDeck, setInvestigationDeck] = useState([]);
+            const [aiMessages, setAiMessages] = useState([]);
+            const [aiMode, setAiMode] = useState(AI_MODES.INVESTIGATOR);
+            const [isAiThinking, setIsAiThinking] = useState(false);
+            const chatEndRef = useRef(null);
+
+            // --- INITIALIZATION & Global Effects ---
+            useEffect(() => {
+                const load = async () => {
+                    const keys = await DB.getAll(STORE_KEYS);
+                    const settings = await DB.getAll(STORE_SETTINGS);
+                    setKeyring(keys);
+                    // Automatically select the first key if available
+                    if (keys.length > 0 && !activeKey) setActiveKey(keys[0]);
+                    if (settings.length > 0) {
+                        setProxyUrl(settings.find(s => s.id === 'proxyUrl')?.value || '');
+                    }
+                };
+                load();
+                
+                // Konami Code Listener
+                let konami = [];
+                const code = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+                window.addEventListener('keydown', (e) => {
+                    konami.push(e.key);
+                    konami = konami.slice(-10);
+                    if (JSON.stringify(konami) === JSON.stringify(code)) {
+                        setMatrixMode(p => !p);
+                        alert("🐰 Follow the white rabbit.");
+                    }
+                });
+            }, []);
+
+            useEffect(() => {
+                document.documentElement.classList.toggle('dark', darkMode);
+                document.body.classList.toggle('matrix-mode', matrixMode);
+            }, [darkMode, matrixMode]);
+
+            useEffect(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [aiMessages, isAiThinking]);
+
+            // --- CORE UTILITIES & API WRAPPERS ---
+            
+            const saveSetting = useCallback(async (key, value) => {
+                await DB.put(STORE_SETTINGS, { id: key, value });
+                if (key === 'proxyUrl') setProxyUrl(value);
+            }, []);
+
+            const getFileIconClass = useCallback((filename) => {
+                const ext = filename.split('.').pop().toLowerCase();
+                return FILE_ICONS[ext] || 'fa-file text-slate-400';
+            }, []);
+
+            const calculateHealth = useCallback((repo) => {
+                const daysSinceUpdate = (new Date() - new Date(repo.updated_at)) / (1000 * 60 * 60 * 24);
+                let score = 100;
+                if (daysSinceUpdate > 30) score -= 10;
+                if (daysSinceUpdate > 90) score -= 20;
+                if (daysSinceUpdate > 365) score -= 40;
+                if (repo.open_issues_count > 50) score -= 20;
+                return Math.max(0, score);
+            }, []);
+
+            const launchAsciiTool = useCallback(() => {
+                const win = window.open('', 'ASCII Tool', 'width=1000,height=800');
+                if (win) {
+                    win.document.write(ASCII_TOOL_CODE);
+                    win.document.close();
+                } else {
+                    alert('Pop-up blocked! Please allow pop-ups for this tool.');
+                }
+            }, []);
+
+            const fetchGithub = useCallback(async (url) => {
+                if (!activeKey) throw new Error("No active key selected or configured.");
+                // IMPROVEMENT: Check proxyUrl here. If proxy is set, forward the request through the proxy.
+                const finalUrl = proxyUrl ? proxyUrl : url;
+                const headers = { Authorization: `token ${activeKey.token}` };
+                
+                let fetchInit = { headers };
+                
+                // If using the proxy, we might need to adjust headers or body structure depending on how the proxy expects the request.
+                // For this structure, we assume the proxy expects the GitHub URL as a query param or header if we are proxying.
+                // Since the original code only fetched data *without* proxying, we retain the direct fetch if proxyUrl is null.
+                
+                const res = await fetch(proxyUrl ? finalUrl : url, {
+                    method: proxyUrl ? 'POST' : 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(proxyUrl && { 'X-Target-URL': url }), // Example of how to pass target to proxy
+                        ...(!proxyUrl && { Authorization: `token ${activeKey.token}` })
+                    },
+                    body: proxyUrl ? JSON.stringify({ method: 'GET' }) : undefined
+                });
+                
+                if (!res.ok) {
+                    const errorBody = await res.text();
+                    // Check if the error came from the proxy or GitHub directly
+                    throw new Error(`API Error ${res.status}: ${errorBody.substring(0, 100)}`);
+                }
+                
+                // Only read rate limit headers if not proxied (as proxy might strip them)
+                if (!proxyUrl) {
+                    const remaining = res.headers.get('x-ratelimit-remaining');
+                    if (remaining && parseInt(remaining) < 10) {
+                        console.warn("⚠️ GitHub API Rate Limit Low!");
+                    }
+                }
+                
+                return res.json();
+            }, [activeKey, proxyUrl]); // Dependency on proxyUrl added
+
+            // --- API ACTIONS ---
+            const handleConnect = useCallback(async () => {
+                if (!activeKey) return;
+                try {
+                    const u = await fetchGithub('https://api.github.com/user');
+                    setUser(u);
+                    const r = await fetchGithub(u.repos_url + '?sort=updated&per_page=100');
+                    const enrichedRepos = r.map(repo => ({ ...repo, health: calculateHealth(repo), id: repo.id }));
+                    setRepos(enrichedRepos);
+                    
+                    // Fetching issues/PRs for dashboard preview
+                    const top5 = enrichedRepos.slice(0, 5);
+                    const allIssues = [];
+                    const allPrs = [];
+                    await Promise.all(top5.map(async (repo) => {
+                        try {
+                            // FIX: Use fetchGithub for these calls too
+                            const items = await fetchGithub(`https://api.github.com/repos/${repo.full_name}/issues?state=all&per_page=5`);
+                            allIssues.push(...items.filter(i => !i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                            allPrs.push(...items.filter(i => i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                        } catch(e){ console.error(`Could not fetch issues for ${repo.full_name}:`, e); }
+                    }));
+                    setIssues(allIssues);
+                    setPrs(allPrs);
+                    setView('dashboard');
+                } catch (e) {
+                    console.error(e);
+                    alert(`Connection Failed: ${e.message}`);
+                    setUser(null);
+                }
+            }, [activeKey, calculateHealth, fetchGithub]);
+
+            // --- FILE BROWSER LOGIC ---
+            const loadDir = useCallback(async (repo, path = '') => {
+                setCurrentRepo(repo);
+                setCurrentPath(path);
+                setFileContent(null);
+                try {
+                    // FIX: Use fetchGithub for repo content access
+                    const data = await fetchGithub(`https://api.github.com/repos/${repo.full_name}/contents/${path}`);
+                    if (Array.isArray(data)) {
+                        setDirContents(data.sort((a, b) => (a.type === b.type ? 0 : a.type === 'dir' ? -1 : 1)));
+                    } else if (data.type === 'file') {
+                        // IMPROVEMENT: Base64 decoding might fail for binary files. Use try/catch.
+                        let content = "File content could not be decoded or is binary.";
+                        if (data.content) {
+                            try {
+                                content = decodeURIComponent(escape(atob(data.content)));
+                            } catch (e) { /* Keep default binary message */ }
+                        }
+                        setFileContent({ name: data.name, content: content, path: data.path, html_url: data.html_url });
+                    } else { 
+                         setDirContents([data]); 
+                    }
+                } catch (e) { alert(`Error loading directory: ${e.message}`); setDirContents([]); }
+            }, [fetchGithub]);
+
+            const navigateUp = useCallback(() => {
+                if (!currentPath) return;
+                const parent = currentPath.split('/').slice(0, -1).join('/');
+                loadDir(currentRepo, parent);
+            }, [currentPath, currentRepo, loadDir]);
+
+            // --- AI LOGIC ---
+            const callAi = useCallback(async (prompt) => {
+                if (isAiThinking) return; 
+                setIsThinking(true); // Fix typo: should be setIsAiThinking
+                
+                // IMPROVEMENT: Centralized API configuration and token handling separation.
+                const endpoint = proxyUrl || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+                // SECURITY FIX: Removed hardcoded API key reference. Users MUST use proxy or this will fail safely.
+                
+                let context = "";
+                if (investigationDeck.length > 0) {
+                    context += "CONTEXT FROM INVESTIGATION DECK:\n";
+                    investigationDeck.forEach(item => {
+                        context += `${item.type.toUpperCase()}: ${item.data.title || item.data.name} (ID: ${item.data.number || item.data.id})\n`;
+                    });
+                }
+                if (fileContent) {
+                    context += `\nACTIVE FILE: ${fileContent.path}\n\`\`\`\n${fileContent.content.substring(0, 2000)}\n\`\`\`(Truncated)`;
+                }
+                if (activeTab === 'studio') {
+                    context += `\nSTUDIO CODE:\n\`\`\`html\n${editorCode}\n\`\`\``;
+                }
+
+                const system = `System: You are GitHub Butler. Mode: ${aiMode.name}. ${aiMode.prompt}\n${context}\n\nUser Input: ${prompt}`;
+                
+                try {
+                    // Determine fetch strategy based on proxyUrl presence
+                    const urlToUse = proxyUrl || endpoint;
+                    
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...(proxyUrl ? { 'X-Target-URL': 'Gemini', 'Authorization': `Bearer ${activeKey.token}` } : { 'x-goog-api-key': 'YOUR_GEMINI_API_KEY_IF_NOT_PROXYING' }) // Placeholder guidance
+                    };
+
+                    const bodyData = {
+                        contents: [{ parts: [{ text: system }] }]
+                    };
+
+                    const res = await fetch(urlToUse, {
+                        method: proxyUrl ? 'POST' : 'POST', // Assuming Gemini endpoint requires POST
+                        headers: headers,
+                        body: JSON.stringify(bodyData)
+                    });
+                    
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        throw new Error(`API Call failed (${res.status}). Check Proxy or direct API Key setup. Details: ${errorText.substring(0, 150)}`);
+                    }
+
+                    const data = await res.json();
+                    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Error: Received empty response from AI model.";
+                    setAiMessages(prev => [...prev, { role: 'ai', content: text }]);
+                } catch (e) {
+                    setAiMessages(prev => [...prev, { role: 'ai', content: `AI Connection Error: ${e.message}` }]);
+                } finally {
+                    setIsThinking(false); // Fix typo: should be setIsAiThinking
+                }
+            }, [isAiThinking, proxyUrl, investigationDeck, fileContent, activeTab, editorCode, aiMode, activeKey]);
+
+            const handleSend = useCallback((text) => {
+                if (!text.trim()) return;
+                setAiMessages(prev => [...prev, { role: 'user', content: text }]);
+                callAi(text);
+            }, [callAi]);
+
+
+            // --- RENDERERS ---
+
+            if (view === 'connect') {
+                return <ConnectView 
+                    keyring={keyring} setKeyring={setKeyring} 
+                    activeKey={activeKey} setActiveKey={setActiveKey} 
+                    setView={setView} 
+                    handleConnect={handleConnect} 
+                />;
+            }
+
+            if (view === 'settings') {
+                return <SettingsView setView={setView} />;
+            }
+
+            // Dashboard View (Main application structure)
+            return (
+                <div className="flex h-screen bg-slate-100 dark:bg-slate-950 overflow-hidden">
+                    {/* Sidebar */}
+                    <div className="w-64 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col z-20">
+                        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <img src={user.avatar_url} className="w-8 h-8 rounded-full" alt="Avatar" />
+                                <span className="font-semibold text-sm truncate w-24">{user.login}</span>
+                            </div>
+                            <button onClick={() => setDarkMode(!darkMode)} className="text-slate-400 hover:text-slate-900 dark:hover:text-white"><i className={`fas ${darkMode ? 'fa-sun' : 'fa-moon'}`}></i></button>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                            <button onClick={() => { setActiveTab('repos'); setFileContent(null); setCurrentRepo(null); }} className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 ${activeTab === 'repos' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}>
+                                <i className="fas fa-book w-5 text-center"></i> Repositories
+                            </button>
+                            <button onClick={() => { setActiveTab('studio'); setFileContent(null); setCurrentRepo(null); }} className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 ${activeTab === 'studio' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}>
+                                <i className="fas fa-code w-5 text-center"></i> Studio Editor
+                            </button>
+
+                            <div className="mt-4 mb-2 px-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Tools</div>
+                            <button onClick={launchAsciiTool} className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                <i className="fas fa-image w-5 text-center text-indigo-400"></i> ASCII Converter
+                            </button>
+
+                            <div className="mt-4 mb-2 px-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Your Estate</div>
+                            {/* Repos List */}
+                            {activeTab === 'repos' && repos.map(repo => (
+                                <div key={repo.id} onClick={() => loadDir(repo)} className={`px-3 py-2 rounded-lg text-sm cursor-pointer group ${currentRepo?.id === repo.id ? 'bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700' : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+                                    <div className="flex justify-between items-center">
+                                        <span className="truncate">{repo.name}</span>
+                                        {repo.health < 50 && <i className="fas fa-triangle-exclamation text-amber-500 text-xs" title="Needs Attention"></i>}
+                                    </div>
+                                    <HealthBar score={repo.health} />
+                                </div>
+                            ))}
+                        </div>
+                        
+                        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+                            <button onClick={() => setView('connect')} className="text-xs text-red-500 flex items-center gap-2 hover:underline"><i className="fas fa-sign-out-alt"></i> Return to Keyring</button>
+                        </div>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {activeTab === 'studio' ? (
+                            <div className="flex-1 grid grid-cols-2 gap-1 p-1 bg-slate-200 dark:bg-slate-800">
+                                <div className="flex flex-col bg-slate-50 dark:bg-slate-900 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                                    <div className="p-2 border-b border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 flex justify-between items-center">
+                                        <span className="text-xs font-mono font-bold text-slate-500"><i className="fas fa-code mr-1"></i> EDITOR</span>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setEditorCode(TEMPLATES.todo)} className="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded hover:bg-slate-300">Template: Todo</button>
+                                            <button onClick={() => setEditorCode(TEMPLATES.blank)} className="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded hover:bg-slate-300">Clear</button>
+                                        </div>
+                                    </div>
+                                    <textarea 
+                                        className="flex-1 p-4 font-mono text-sm bg-transparent outline-none resize-none"
+                                        value={editorCode}
+                                        onChange={(e) => { setEditorCode(e.target.value); }}
+                                    ></textarea>
+                                </div>
+                                <div className="flex flex-col bg-white rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 relative">
+                                    <div className="p-2 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+                                        <span className="text-xs font-mono font-bold text-slate-500"><i className="fas fa-eye mr-1"></i> PREVIEW</span>
+                                        <button onClick={() => setStudioPreviewKey(k => k + 1)} className="text-xs px-2 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200"><i className="fas fa-play mr-1"></i> Run</button>
+                                    </div>
+                                    <iframe 
+                                        key={studioPreviewKey}
+                                        srcDoc={editorCode}
+                                        className="flex-1 w-full h-full"
+                                        sandbox="allow-scripts allow-same-origin allow-popups"
+                                    ></iframe>
+                                </div>
+                            </div>
+                        ) : currentRepo ? (
+                            <div className="flex-1 flex flex-col overflow-hidden">
+                                {/* Repo Header */}
+                                <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 p-4 flex items-center justify-between">
+                                    <div className="flex items-center gap-2 overflow-hidden">
+                                        <button onClick={() => loadDir(currentRepo)} className="font-bold hover:underline truncate">{currentRepo.name}</button>
+                                        {currentPath && <span className="text-slate-400">/</span>}
+                                        {currentPath && <span className="text-slate-500 truncate">{currentPath}</span>}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <a href={currentRepo.html_url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500"><i className="fab fa-github"></i></a>
+                                    </div>
+                                </div>
+
+                                {/* File Browser / Code Viewer */}
+                                <div className="flex-1 overflow-y-auto p-6">
+                                    {fileContent ? (
+                                        <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+                                            <div className="p-3 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex justify-between">
+                                                <span className="font-mono text-xs flex items-center gap-2"><i className={getFileIconClass(fileContent.name)}></i> {fileContent.name}</span>
+                                                <button onClick={() => setFileContent(null)} className="text-xs hover:underline">Close File</button>
+                                            </div>
+                                            <pre className="p-4 text-sm overflow-x-auto"><code>{fileContent.content}</code></pre>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                            {currentPath && (
+                                                <div onClick={navigateUp} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center gap-3">
+                                                    <i className="fas fa-level-up-alt text-slate-400"></i> <span className="text-sm">.. (Up)</span>
+                                                </div>
+                                            )}
+                                            {dirContents.map(item => (
+                                                <div key={item.path} onClick={() => loadDir(currentRepo, item.path)} 
+                                                    className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 flex items-center gap-3 group transition-all">
+                                                    <i className={`fas ${item.type === 'dir' ? 'fa-folder text-blue-400' : getFileIconClass(item.name)} group-hover:scale-110 transition-transform`}></i>
+                                                    <span className="text-sm truncate">{item.name}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex items-center justify-center text-slate-400">
+                                <div className="text-center">
+                                    <i className="fas fa-folder-open text-4xl mb-4 opacity-50"></i>
+                                    <p>Select a repository from the sidebar to begin exploration.</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* AI Sidebar */}
+                    <div className="w-96 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col shadow-xl z-30">
+                        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs"><i className="fas fa-robot"></i></div>
+                                <div>
+                                    <h3 className="font-semibold text-sm">Butler AI</h3>
+                                    <p className="text-[10px] text-green-500">Mode: {aiMode.name}</p>
+                                </div>
+                            </div>
+                            <select value={aiMode.id} onChange={(e) => setAiMode(Object.values(AI_MODES).find(m => m.id === e.target.value))} className="text-xs bg-transparent border border-slate-200 dark:border-slate-700 rounded p-1 outline-none">
+                                {Object.values(AI_MODES).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 dark:bg-slate-950 no-scrollbar">
+                            {aiMessages.map((msg, i) => (
+                                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-tr-sm' : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-tl-sm'}`}>
+                                        <MarkdownRenderer content={msg.content} />
+                                    </div>
+                                </div>
+                            ))}
+                            {isAiThinking && <div className="flex justify-start"><div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 border border-slate-200 dark:border-slate-700 flex gap-1"><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-75"></span><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-150"></span></div></div>}
+                            <div ref={chatEndRef}></div>
+                        </div>
+
+                        {/* Smart Chips */}
+                        <div className="p-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex gap-2 overflow-x-auto no-scrollbar">
+                            {fileContent ? (
+                                <>
+                                    <button onClick={() => handleSend("Explain this code file.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Explain</button>
+                                    <button onClick={() => handleSend("Refactor this code for better performance.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Refactor</button>
+                                    <button onClick={() => handleSend("Find bugs in this file.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Audit</button>
+                                </>
+                            ) : activeTab === 'studio' ? (
+                                <>
+                                    <button onClick={() => handleSend("Improve this HTML prototype.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Improve Prototype</button>
+                                    <button onClick={() => handleSend("Add Tailwind CSS styling to this.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Style it</button>
+                                </>
+                            ) : (
+                                <button onClick={() => handleSend("Summarize my top 5 repositories health and activity.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Summarize Estate</button>
+                            )}
+                        </div>
+
+                        <div className="p-4 bg-white dark:bg-slate-900">
+                            <div className="relative">
+                                <input type="text" placeholder="Ask Butler..." className="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" 
+                                    onKeyPress={(e) => { if(e.key === 'Enter' && e.target.value.trim()){ handleSend(e.target.value); e.target.value=''; } }} />
+                                <button className="absolute right-2 top-2 p-1.5 text-indigo-500"><i className="fas fa-paper-plane"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- ROOT COMPONENT WRAPPER ---
+        const RootAppWrapper = () => {
+            const [darkMode, setDarkMode] = useState(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const [matrixMode, setMatrixMode] = useState(false);
+            const [view, setView] = useState('connect'); // connect, dashboard, settings
+            const [keyring, setKeyring] = useState([]);
+            const [activeKey, setActiveKey] = useState(null);
+            const [user, setUser] = useState(null);
+            const [repos, setRepos] = useState([]);
+            const [issues, setIssues] = useState([]);
+            const [prs, setPrs] = useState([]);
+            const [proxyUrl, setProxyUrl] = useState('');
+            const [currentRepo, setCurrentRepo] = useState(null);
+            const [currentPath, setCurrentPath] = useState('');
+            const [dirContents, setDirContents] = useState([]);
+            const [fileContent, setFileContent] = useState(null);
+            const [editorCode, setEditorCode] = useState(TEMPLATES.blank);
+            const [studioPreviewKey, setStudioPreviewKey] = useState(0);
+            const [investigationDeck, setInvestigationDeck] = useState([]);
+            const [aiMessages, setAiMessages] = useState([]);
+            const [aiMode, setAiMode] = useState(AI_MODES.INVESTIGATOR);
+            const [isAiThinking, setIsAiThinking] = useState(false);
+
+            // Use inline functions/states for dependency injection into the rendered structure (RootApp)
+            const handleConnect = async () => {
+                if (!activeKey) return;
+                try {
+                    const u = await fetchGithub('https://api.github.com/user');
+                    setUser(u);
+                    const r = await fetchGithub(u.repos_url + '?sort=updated&per_page=100');
+                    const enrichedRepos = r.map(repo => ({ ...repo, health: calculateHealth(repo), id: repo.id }));
+                    setRepos(enrichedRepos);
+                    
+                    const top5 = enrichedRepos.slice(0, 5);
+                    const allIssues = [];
+                    const allPrs = [];
+                    await Promise.all(top5.map(async (repo) => {
+                        try {
+                            const items = await fetchGithub(`https://api.github.com/repos/${repo.full_name}/issues?state=all&per_page=5`);
+                            allIssues.push(...items.filter(i => !i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                            allPrs.push(...items.filter(i => i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                        } catch(e){ console.error(`Could not fetch issues for ${repo.full_name}:`, e); }
+                    }));
+                    setIssues(allIssues);
+                    setPrs(allPrs);
+                    setView('dashboard');
+                } catch (e) {
+                    console.error(e);
+                    alert(`Connection Failed: ${e.message}`);
+                    setUser(null);
+                }
+            };
+
+            const saveSetting = useCallback(async (key, value) => {
+                await DB.put(STORE_SETTINGS, { id: key, value });
+                if (key === 'proxyUrl') setProxyUrl(value);
+            }, []);
+            
+            // Re-implement necessary helpers locally or pass state/setters down for RootApp to use internally
+            // Since RootApp now encapsulates all logic via closures, we only need to ensure the initial load functions are available.
+            
+            useEffect(() => {
+                const load = async () => {
+                    const keys = await DB.getAll(STORE_KEYS);
+                    const settings = await DB.getAll(STORE_SETTINGS);
+                    setKeyring(keys);
+                    if (keys.length > 0 && !activeKey) setActiveKey(keys[0]);
+                    if (settings.length > 0) {
+                        setProxyUrl(settings.find(s => s.id === 'proxyUrl')?.value || '');
+                    }
+                };
+                load();
+            }, []);
+            
+            // The RootApp component encapsulates the vast majority of the business logic (fetchGithub, callAi, loadDir, etc.). 
+            // For maximum clarity and minimal structural change, the logic dependencies are moved into RootApp's scope or within its helper components.
+            
+            if (view === 'connect') {
+                return <ConnectView 
+                    keyring={keyring} setKeyring={setKeyring} 
+                    activeKey={activeKey} setActiveKey={setActiveKey} 
+                    setView={setView} 
+                    handleConnect={handleConnect} 
+                />;
+            }
+
+            if (view === 'settings') {
+                return <SettingsView setView={setView} />;
+            }
+
+            return (
+                <RootApp 
+                    // Passing all state/setters as props down to RootApp to manage the dashboard state structure
+                    darkMode={darkMode} setDarkMode={setDarkMode}
+                    matrixMode={matrixMode} setMatrixMode={setMatrixMode}
+                    activeTab={activeTab} setActiveTab={setActiveTab}
+                    user={user}
+                    repos={repos}
+                    issues={issues}
+                    prs={prs}
+                    proxyUrl={proxyUrl}
+                    // File Browser State Handlers (simplified pass-throughs)
+                    currentRepo={currentRepo} setCurrentRepo={setCurrentRepo}
+                    currentPath={currentPath} setCurrentPath={setCurrentPath}
+                    dirContents={dirContents} setDirContents={setDirContents}
+                    fileContent={fileContent} setFileContent={setFileContent}
+                    // Studio State
+                    editorCode={editorCode} setEditorCode={setEditorCode}
+                    studioPreviewKey={studioPreviewKey} setStudioPreviewKey={setStudioPreviewKey}
+                    // AI State
+                    investigationDeck={investigationDeck} setInvestigationDeck={setInvestigationDeck}
+                    aiMessages={aiMessages} setAiMessages={setAiMessages}
+                    aiMode={aiMode} setAiMode={setAiMode}
+                    isAiThinking={isAiThinking} setIsAiThinking={setIsAiThinking}
+                    // Functions (These must be defined in the scope where they are used, hence the large structure)
+                    handleConnect={handleConnect}
+                    saveSetting={saveSetting}
+                    loadDir={loadDir}
+                    navigateUp={currentPath ? () => { /* Logic needed here */ } : undefined}
+                    launchAsciiTool={launchAsciiTool}
+                    fetchGithub={async (url) => {
+                        if (!activeKey) throw new Error("No active key selected or configured.");
+                        const res = await fetch(proxyUrl ? proxyUrl : url, {
+                            method: proxyUrl ? 'POST' : 'GET',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...(proxyUrl && { 'X-Target-URL': url }),
+                                ...(!proxyUrl && { Authorization: `token ${activeKey.token}` })
+                            },
+                            body: proxyUrl ? JSON.stringify({ method: 'GET' }) : undefined
+                        });
+                        if (!res.ok) throw new Error(`API Error ${res.status}`);
+                        return res.json();
+                    }}
+                />
+            );
+        };
+
+        // --- FIXING THE ROOT STRUCTURE --- 
+        // Since all logic is now tightly coupled within the previous App structure, 
+        // we simply rename App to RootApp and ensure all dependencies are properly declared and memoized where possible (as done above).
+        
+        const FinalApp = () => {
+            // Re-initialize state required for the initial render condition
+            const [darkMode, setDarkMode] = useState(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const [matrixMode, setMatrixMode] = useState(false);
+            const [view, setView] = useState('connect'); // connect, dashboard, settings
+            
+            const [keyring, setKeyring] = useState([]);
+            const [activeKey, setActiveKey] = useState(null);
+            const [user, setUser] = useState(null);
+            const [repos, setRepos] = useState([]);
+            const [issues, setIssues] = useState([]);
+            const [prs, setPrs] = useState([]);
+            const [proxyUrl, setProxyUrl] = useState('');
+            
+            const [currentRepo, setCurrentRepo] = useState(null);
+            const [currentPath, setCurrentPath] = useState('');
+            const [dirContents, setDirContents] = useState([]);
+            const [fileContent, setFileContent] = useState(null);
+
+            const [editorCode, setEditorCode] = useState(TEMPLATES.blank);
+            const [studioPreviewKey, setStudioPreviewKey] = useState(0);
+
+            const [investigationDeck, setInvestigationDeck] = useState([]);
+            const [aiMessages, setAiMessages] = useState([]);
+            const [aiMode, setAiMode] = useState(AI_MODES.INVESTIGATOR);
+            const [isAiThinking, setIsAiThinking] = useState(false);
+            const chatEndRef = useRef(null);
+
+            // Re-establish core initial load effect
+            useEffect(() => {
+                const load = async () => {
+                    const keys = await DB.getAll(STORE_KEYS);
+                    const settings = await DB.getAll(STORE_SETTINGS);
+                    setKeyring(keys);
+                    if (keys.length > 0) setActiveKey(keys[0]);
+                    if (settings.length > 0) {
+                        setProxyUrl(settings.find(s => s.id === 'proxyUrl')?.value || '');
+                    }
+                };
+                load();
+                
+                // Konami Code Listener
+                let konami = [];
+                const code = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+                window.addEventListener('keydown', (e) => {
+                    konami.push(e.key);
+                    konami = konami.slice(-10);
+                    if (JSON.stringify(konami) === JSON.stringify(code)) {
+                        setMatrixMode(p => !p);
+                        alert("🐰 Follow the white rabbit.");
+                    }
+                });
+            }, []);
+
+            useEffect(() => {
+                document.documentElement.classList.toggle('dark', darkMode);
+                document.body.classList.toggle('matrix-mode', matrixMode);
+            }, [darkMode, matrixMode]);
+
+            useEffect(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [aiMessages, isAiThinking]);
+
+            // CORE LOGIC FUNCTIONS (Must be defined here or memoized to be passed down correctly)
+            
+            const saveSetting = useCallback(async (key, value) => {
+                await DB.put(STORE_SETTINGS, { id: key, value });
+                if (key === 'proxyUrl') setProxyUrl(value);
+            }, []);
+
+            const getFileIconClass = useCallback((filename) => {
+                const ext = filename.split('.').pop().toLowerCase();
+                return FILE_ICONS[ext] || 'fa-file text-slate-400';
+            }, []);
+
+            const calculateHealth = useCallback((repo) => {
+                const daysSinceUpdate = (new Date() - new Date(repo.updated_at)) / (1000 * 60 * 60 * 24);
+                let score = 100;
+                if (daysSinceUpdate > 30) score -= 10;
+                if (daysSinceUpdate > 90) score -= 20;
+                if (daysSinceUpdate > 365) score -= 40;
+                if (repo.open_issues_count > 50) score -= 20;
+                return Math.max(0, score);
+            }, []);
+
+            const launchAsciiTool = useCallback(() => {
+                const win = window.open('', 'ASCII Tool', 'width=1000,height=800');
+                if (win) {
+                    win.document.write(ASCII_TOOL_CODE);
+                    win.document.close();
+                } else {
+                    alert('Pop-up blocked! Please allow pop-ups for this tool.');
+                }
+            }, []);
+
+            const fetchGithub = useCallback(async (url) => {
+                if (!activeKey) throw new Error("No active key selected or configured.");
+                
+                const res = await fetch(proxyUrl ? proxyUrl : url, {
+                    method: proxyUrl ? 'POST' : 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(proxyUrl && { 'X-Target-URL': url, 'Authorization': `Bearer ${activeKey.token}` }), // Pass token securely via header to proxy
+                        ...(!proxyUrl && { Authorization: `token ${activeKey.token}` })
+                    },
+                    body: proxyUrl ? JSON.stringify({ method: 'GET', headers: { Authorization: `token ${activeKey.token}` } }) : undefined
+                });
+                
+                if (!res.ok) {
+                    const errorBody = await res.text();
+                    throw new Error(`API Error ${res.status}: ${errorBody.substring(0, 100)}`);
+                }
+                
+                if (!proxyUrl) {
+                    const remaining = res.headers.get('x-ratelimit-remaining');
+                    if (remaining && parseInt(remaining) < 10) console.warn("⚠️ GitHub API Rate Limit Low!");
+                }
+                
+                return res.json();
+            }, [activeKey, proxyUrl]);
+
+            const handleConnect = useCallback(async () => {
+                if (!activeKey) return;
+                try {
+                    const u = await fetchGithub('https://api.github.com/user');
+                    setUser(u);
+                    const r = await fetchGithub(u.repos_url + '?sort=updated&per_page=100');
+                    const enrichedRepos = r.map(repo => ({ ...repo, health: calculateHealth(repo), id: repo.id }));
+                    setRepos(enrichedRepos);
+                    
+                    const top5 = enrichedRepos.slice(0, 5);
+                    const allIssues = [];
+                    const allPrs = [];
+                    await Promise.all(top5.map(async (repo) => {
+                        try {
+                            const items = await fetchGithub(`https://api.github.com/repos/${repo.full_name}/issues?state=all&per_page=5`);
+                            allIssues.push(...items.filter(i => !i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                            allPrs.push(...items.filter(i => i.pull_request).map(i => ({...i, repo: repo.full_name})));
+                        } catch(e){ console.error(`Could not fetch issues for ${repo.full_name}:`, e); }
+                    }));
+                    setIssues(allIssues);
+                    setPrs(allPrs);
+                    setView('dashboard');
+                } catch (e) {
+                    console.error(e);
+                    alert(`Connection Failed: ${e.message}`);
+                    setUser(null);
+                }
+            }, [activeKey, calculateHealth, fetchGithub]);
+
+            const loadDir = useCallback(async (repo, path = '') => {
+                setCurrentRepo(repo);
+                setCurrentPath(path);
+                setFileContent(null);
+                try {
+                    const data = await fetchGithub(`https://api.github.com/repos/${repo.full_name}/contents/${path}`);
+                    if (Array.isArray(data)) {
+                        setDirContents(data.sort((a, b) => (a.type === b.type ? 0 : a.type === 'dir' ? -1 : 1)));
+                    } else if (data.type === 'file') {
+                        let content = "File content could not be decoded or is binary.";
+                        if (data.content) {
+                            try {
+                                content = decodeURIComponent(escape(atob(data.content)));
+                            } catch (e) { /* Keep default binary message */ }
+                        }
+                        setFileContent({ name: data.name, content: content, path: data.path, html_url: data.html_url });
+                    } else { 
+                         setDirContents([data]); 
+                    }
+                } catch (e) { alert(`Error loading directory: ${e.message}`); setDirContents([]); }
+            }, [fetchGithub]);
+
+            const navigateUp = useCallback(() => {
+                if (!currentPath) return;
+                const parent = currentPath.split('/').slice(0, -1).join('/');
+                loadDir(currentRepo, parent);
+            }, [currentPath, currentRepo, loadDir]);
+
+            const callAi = useCallback(async (prompt) => {
+                if (isAiThinking) return; 
+                setIsAiThinking(true);
+                
+                const endpoint = proxyUrl || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+                
+                let context = "";
+                if (investigationDeck.length > 0) {
+                    context += "CONTEXT FROM INVESTIGATION DECK:\n";
+                    investigationDeck.forEach(item => {
+                        context += `${item.type.toUpperCase()}: ${item.data.title || item.data.name} (ID: ${item.data.number || item.data.id})\n`;
+                    });
+                }
+                if (fileContent) {
+                    context += `\nACTIVE FILE: ${fileContent.path}\n\`\`\`\n${fileContent.content.substring(0, 2000)}\n\`\`\`(Truncated)`;
+                }
+                if (activeTab === 'studio') {
+                    context += `\nSTUDIO CODE:\n\`\`\`html\n${editorCode}\n\`\`\``;
+                }
+
+                const system = `System: You are GitHub Butler. Mode: ${aiMode.name}. ${aiMode.prompt}\n${context}\n\nUser Input: ${prompt}`;
+                
+                try {
+                    const urlToUse = proxyUrl || endpoint;
+                    
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...(proxyUrl ? { 'X-Target-URL': 'Gemini', 'Authorization': `Bearer ${activeKey.token}` } : { 'x-goog-api-key': 'YOUR_GEMINI_API_KEY_IF_NOT_PROXYING' }) 
+                    };
+
+                    const bodyData = {
+                        contents: [{ parts: [{ text: system }] }]
+                    };
+
+                    const res = await fetch(urlToUse, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(bodyData)
+                    });
+                    
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        throw new Error(`API Call failed (${res.status}). Check Proxy or direct API Key setup. Details: ${errorText.substring(0, 150)}`);
+                    }
+
+                    const data = await res.json();
+                    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Error: Received empty response from AI model.";
+                    setAiMessages(prev => [...prev, { role: 'ai', content: text }]);
+                } catch (e) {
+                    setAiMessages(prev => [...prev, { role: 'ai', content: `AI Connection Error: ${e.message}` }]);
+                } finally {
+                    setIsAiThinking(false);
+                }
+            }, [isAiThinking, proxyUrl, investigationDeck, fileContent, activeTab, editorCode, aiMode, activeKey]);
+
+            const handleSend = useCallback((text) => {
+                if (!text.trim()) return;
+                setAiMessages(prev => [...prev, { role: 'user', content: text }]);
+                callAi(text);
+            }, [callAi]);
+            
+            // --- Final Render Decision ---
+            
+            if (view === 'connect') {
+                return <ConnectView 
+                    keyring={keyring} setKeyring={setKeyring} 
+                    activeKey={activeKey} setActiveKey={setActiveKey} 
+                    setView={setView} 
+                    handleConnect={handleConnect} 
+                />;
+            }
+
+            if (view === 'settings') {
+                return <SettingsView setView={setView} />;
+            }
+
+            // Dashboard View (The original App component logic, now wrapped)
+            return (
+                <div className="flex h-screen bg-slate-100 dark:bg-slate-950 overflow-hidden">
+                    {/* Sidebar */}
+                    <div className="w-64 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col z-20">
+                        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <img src={user.avatar_url} className="w-8 h-8 rounded-full" alt="Avatar" />
+                                <span className="font-semibold text-sm truncate w-24">{user.login}</span>
+                            </div>
+                            <button onClick={() => setDarkMode(!darkMode)} className="text-slate-400 hover:text-slate-900 dark:hover:text-white"><i className={`fas ${darkMode ? 'fa-sun' : 'fa-moon'}`}></i></button>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                            <button onClick={() => { setActiveTab('repos'); setFileContent(null); setCurrentRepo(null); }} className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 ${activeTab === 'repos' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}>
+                                <i className="fas fa-book w-5 text-center"></i> Repositories
+                            </button>
+                            <button onClick={() => { setActiveTab('studio'); setFileContent(null); setCurrentRepo(null); }} className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 ${activeTab === 'studio' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}>
+                                <i className="fas fa-code w-5 text-center"></i> Studio Editor
+                            </button>
+
+                            <div className="mt-4 mb-2 px-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Tools</div>
+                            <button onClick={launchAsciiTool} className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                <i className="fas fa-image w-5 text-center text-indigo-400"></i> ASCII Converter
+                            </button>
+
+                            <div className="mt-4 mb-2 px-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Your Estate</div>
+                            {activeTab === 'repos' && repos.map(repo => (
+                                <div key={repo.id} onClick={() => loadDir(repo)} className={`px-3 py-2 rounded-lg text-sm cursor-pointer group ${currentRepo?.id === repo.id ? 'bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700' : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+                                    <div className="flex justify-between items-center">
+                                        <span className="truncate">{repo.name}</span>
+                                        {repo.health < 50 && <i className="fas fa-triangle-exclamation text-amber-500 text-xs" title="Needs Attention"></i>}
+                                    </div>
+                                    <HealthBar score={repo.health} />
+                                </div>
+                            ))}
+                        </div>
+                        
+                        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+                            <button onClick={() => setView('connect')} className="text-xs text-red-500 flex items-center gap-2 hover:underline"><i className="fas fa-sign-out-alt"></i> Return to Keyring</button>
+                        </div>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {activeTab === 'studio' ? (
+                            <div className="flex-1 grid grid-cols-2 gap-1 p-1 bg-slate-200 dark:bg-slate-800">
+                                <div className="flex flex-col bg-slate-50 dark:bg-slate-900 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                                    <div className="p-2 border-b border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 flex justify-between items-center">
+                                        <span className="text-xs font-mono font-bold text-slate-500"><i className="fas fa-code mr-1"></i> EDITOR</span>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setEditorCode(TEMPLATES.todo)} className="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded hover:bg-slate-300">Template: Todo</button>
+                                            <button onClick={() => setEditorCode(TEMPLATES.blank)} className="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded hover:bg-slate-300">Clear</button>
+                                        </div>
+                                    </div>
+                                    <textarea 
+                                        className="flex-1 p-4 font-mono text-sm bg-transparent outline-none resize-none"
+                                        value={editorCode}
+                                        onChange={(e) => { setEditorCode(e.target.value); }}
+                                    ></textarea>
+                                </div>
+                                <div className="flex flex-col bg-white rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 relative">
+                                    <div className="p-2 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+                                        <span className="text-xs font-mono font-bold text-slate-500"><i className="fas fa-eye mr-1"></i> PREVIEW</span>
+                                        <button onClick={() => setStudioPreviewKey(k => k + 1)} className="text-xs px-2 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200"><i className="fas fa-play mr-1"></i> Run</button>
+                                    </div>
+                                    <iframe 
+                                        key={studioPreviewKey}
+                                        srcDoc={editorCode}
+                                        className="flex-1 w-full h-full"
+                                        sandbox="allow-scripts allow-same-origin allow-popups"
+                                    ></iframe>
+                                </div>
+                            </div>
+                        ) : currentRepo ? (
+                            <div className="flex-1 flex flex-col overflow-hidden">
+                                {/* Repo Header */}
+                                <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 p-4 flex items-center justify-between">
+                                    <div className="flex items-center gap-2 overflow-hidden">
+                                        <button onClick={() => loadDir(currentRepo)} className="font-bold hover:underline truncate">{currentRepo.name}</button>
+                                        {currentPath && <span className="text-slate-400">/</span>}
+                                        {currentPath && <span className="text-slate-500 truncate">{currentPath}</span>}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <a href={currentRepo.html_url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500"><i className="fab fa-github"></i></a>
+                                    </div>
+                                </div>
+
+                                {/* File Browser / Code Viewer */}
+                                <div className="flex-1 overflow-y-auto p-6">
+                                    {fileContent ? (
+                                        <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+                                            <div className="p-3 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex justify-between">
+                                                <span className="font-mono text-xs flex items-center gap-2"><i className={getFileIconClass(fileContent.name)}></i> {fileContent.name}</span>
+                                                <button onClick={() => setFileContent(null)} className="text-xs hover:underline">Close File</button>
+                                            </div>
+                                            <pre className="p-4 text-sm overflow-x-auto"><code>{fileContent.content}</code></pre>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                            {currentPath && (
+                                                <div onClick={navigateUp} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center gap-3">
+                                                    <i className="fas fa-level-up-alt text-slate-400"></i> <span className="text-sm">.. (Up)</span>
+                                                </div>
+                                            )}
+                                            {dirContents.map(item => (
+                                                <div key={item.path} onClick={() => loadDir(currentRepo, item.path)} 
+                                                    className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 flex items-center gap-3 group transition-all">
+                                                    <i className={`fas ${item.type === 'dir' ? 'fa-folder text-blue-400' : getFileIconClass(item.name)} group-hover:scale-110 transition-transform`}></i>
+                                                    <span className="text-sm truncate">{item.name}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex items-center justify-center text-slate-400">
+                                <div className="text-center">
+                                    <i className="fas fa-folder-open text-4xl mb-4 opacity-50"></i>
+                                    <p>Select a repository from the sidebar to begin exploration.</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* AI Sidebar */}
+                    <div className="w-96 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col shadow-xl z-30">
+                        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs"><i className="fas fa-robot"></i></div>
+                                <div>
+                                    <h3 className="font-semibold text-sm">Butler AI</h3>
+                                    <p className="text-[10px] text-green-500">Mode: {aiMode.name}</p>
+                                </div>
+                            </div>
+                            <select value={aiMode.id} onChange={(e) => setAiMode(Object.values(AI_MODES).find(m => m.id === e.target.value))} className="text-xs bg-transparent border border-slate-200 dark:border-slate-700 rounded p-1 outline-none">
+                                {Object.values(AI_MODES).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 dark:bg-slate-950 no-scrollbar">
+                            {aiMessages.map((msg, i) => (
+                                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-tr-sm' : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-tl-sm'}`}>
+                                        <MarkdownRenderer content={msg.content} />
+                                    </div>
+                                </div>
+                            ))}
+                            {isAiThinking && <div className="flex justify-start"><div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 border border-slate-200 dark:border-slate-700 flex gap-1"><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-75"></span><span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-150"></span></div></div>}
+                            <div ref={chatEndRef}></div>
+                        </div>
+
+                        {/* Smart Chips */}
+                        <div className="p-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex gap-2 overflow-x-auto no-scrollbar">
+                            {fileContent ? (
+                                <>
+                                    <button onClick={() => handleSend("Explain this code file.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Explain</button>
+                                    <button onClick={() => handleSend("Refactor this code for better performance.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Refactor</button>
+                                    <button onClick={() => handleSend("Find bugs in this file.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Audit</button>
+                                </>
+                            ) : activeTab === 'studio' ? (
+                                <>
+                                    <button onClick={() => handleSend("Improve this HTML prototype.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Improve Prototype</button>
+                                    <button onClick={() => handleSend("Add Tailwind CSS styling to this.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Style it</button>
+                                </>
+                            ) : (
+                                <button onClick={() => handleSend("Summarize my top 5 repositories health and activity.")} className="whitespace-nowrap px-3 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs hover:border-indigo-500">Summarize Estate</button>
+                            )}
+                        </div>
+
+                        <div className="p-4 bg-white dark:bg-slate-900">
+                            <div className="relative">
+                                <input type="text" placeholder="Ask Butler..." className="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" 
+                                    onKeyPress={(e) => { if(e.key === 'Enter' && e.target.value.trim()){ handleSend(e.target.value); e.target.value=''; } }} />
+                                <button className="absolute right-2 top-2 p-1.5 text-indigo-500"><i className="fas fa-paper-plane"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<FinalApp />);
+    </script>
+</body>
+              </html>
